@@ -35,6 +35,7 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from tf2_ros import TransformBroadcaster
 
 import gym
+import yaml
 import numpy as np
 from transforms3d import euler
 
@@ -56,7 +57,6 @@ class GymBridge(Node):
         self.declare_parameter('scan_fov')
         self.declare_parameter('scan_beams')
         self.declare_parameter('map_path')
-        self.declare_parameter('map_img_ext')
         self.declare_parameter('num_agent')
         self.declare_parameter('sx')
         self.declare_parameter('sy')
@@ -72,11 +72,17 @@ class GymBridge(Node):
             raise ValueError('num_agents should be either 1 or 2.')
         elif type(num_agents) != int:
             raise ValueError('num_agents should be an int.')
+        
+        map_yaml = yaml.safe_load(open(self.get_parameter('map_path').value, 'r'))
+        # Take out the .yaml
+        map = self.get_parameter('map_path').value.split('.')[0]
+        # Get the map_ext from the yaml file with key "image"
+        map_ext = '.' + map_yaml['image'].split('.')[-1]
 
         # env backend
         self.env = gym.make('f110_gym:f110-v0',
-                            map=self.get_parameter('map_path').value,
-                            map_ext=self.get_parameter('map_img_ext').value,
+                            map=map,
+                            map_ext=map_ext,
                             num_agents=num_agents)
 
         sx = self.get_parameter('sx').value

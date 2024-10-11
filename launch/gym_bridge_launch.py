@@ -21,13 +21,24 @@
 # SOFTWARE.
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
 from launch_ros.actions import Node
-from launch.substitutions import Command
+from launch.substitutions import Command, LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
 import os
 import yaml
 
 def generate_launch_description():
+    declared_arguments = [
+        DeclareLaunchArgument(
+            'map_path',
+            default_value=os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'maps', 'levine.yaml'),
+            description='Full path to map file to load'
+        ),
+    ]
+
+    map_path = LaunchConfiguration('map_path')
+
     ld = LaunchDescription()
     config = os.path.join(
         get_package_share_directory('f1tenth_gym_ros'),
@@ -42,7 +53,7 @@ def generate_launch_description():
         package='f1tenth_gym_ros',
         executable='gym_bridge',
         name='bridge',
-        parameters=[config]
+        parameters=[config, {'map_path': map_path}],
     )
     rviz_node = Node(
         package='rviz2',
@@ -53,7 +64,7 @@ def generate_launch_description():
     map_server_node = Node(
         package='nav2_map_server',
         executable='map_server',
-        parameters=[{'yaml_filename': config_dict['bridge']['ros__parameters']['map_path'] + '.yaml'},
+        parameters=[{'yaml_filename': map_path},
                     {'topic': 'map'},
                     {'frame_id': 'map'},
                     {'output': 'screen'},
@@ -84,6 +95,7 @@ def generate_launch_description():
     )
 
     # finalize
+    ld.add_action(*declared_arguments)
     ld.add_action(rviz_node)
     ld.add_action(bridge_node)
     ld.add_action(nav_lifecycle_node)
