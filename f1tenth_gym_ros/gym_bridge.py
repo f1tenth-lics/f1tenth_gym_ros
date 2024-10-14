@@ -31,8 +31,9 @@ from geometry_msgs.msg import Twist
 from geometry_msgs.msg import TransformStamped
 from geometry_msgs.msg import Transform
 from geometry_msgs.msg import Quaternion
-from ackermann_msgs.msg import AckermannDriveStamped
+from ackermann_msgs.msg import AckermannDrive
 from tf2_ros import TransformBroadcaster
+from rclpy.qos import qos_profile_sensor_data, QoSProfile
 
 import gym
 import yaml
@@ -84,6 +85,27 @@ class GymBridge(Node):
                             map=map,
                             map_ext=map_ext,
                             num_agents=num_agents)
+        
+        params_dict = {
+            'mu': 1.0489,
+            'C_Sf': 4.718,
+            'C_Sr': 5.4562,
+            'lf': 0.1795,
+            'lr': 0.1405,
+            'h': 0.074,
+            'm': 3.5,
+            'I': 0.0612,
+            's_min': -0.4189,
+            's_max': 0.4189,
+            'sv_min': -3.2,
+            'sv_max': 3.2,
+            'v_switch':7.319,
+            'a_max': 9.51,
+            'v_min':-5.0,
+            'v_max': 20.0,
+            'width': 0.31,
+            'length': 0.58
+        }
 
         sx = self.get_parameter('sx').value
         sy = self.get_parameter('sy').value
@@ -93,16 +115,18 @@ class GymBridge(Node):
         self.ego_requested_speed = 0.0
         self.ego_steer = 0.0
         self.ego_collision = False
-        ego_scan_topic = self.get_parameter('ego_scan_topic').value
-        ego_drive_topic = self.get_parameter('ego_drive_topic').value
+        self.ego_namespace = self.get_parameter('ego_namespace').value
+        ego_scan_topic = self.ego_namespace + '/' + self.get_parameter('ego_scan_topic').value
+        ego_drive_topic = self.ego_namespace + '/' + self.get_parameter('ego_drive_topic').value
         scan_fov = self.get_parameter('scan_fov').value
         scan_beams = self.get_parameter('scan_beams').value
         self.angle_min = -scan_fov / 2.
         self.angle_max = scan_fov / 2.
         self.angle_inc = scan_fov / scan_beams
-        self.ego_namespace = self.get_parameter('ego_namespace').value
         ego_odom_topic = self.ego_namespace + '/' + self.get_parameter('ego_odom_topic').value
         self.scan_distance_to_base_link = self.get_parameter('scan_distance_to_base_link').value
+        self.last_ego_command_time = self.get_clock().now()
+        self.last_opp_command_time = self.get_clock().now()
         
         if num_agents == 2:
             self.has_opp = True
@@ -119,9 +143,9 @@ class GymBridge(Node):
             self.ego_scan = list(self.obs['scans'][0])
             self.opp_scan = list(self.obs['scans'][1])
 
-            opp_scan_topic = self.get_parameter('opp_scan_topic').value
+            opp_scan_topic = self.opp_namespace + '/' + self.get_parameter('opp_scan_topic').value
             opp_odom_topic = self.opp_namespace + '/' + self.get_parameter('opp_odom_topic').value
-            opp_drive_topic = self.get_parameter('opp_drive_topic').value
+            opp_drive_topic = self.opp_namespace + '/' + self.get_parameter('opp_drive_topic').value
 
             ego_opp_odom_topic = self.ego_namespace + '/' + self.get_parameter('ego_opp_odom_topic').value
             opp_ego_odom_topic = self.opp_namespace + '/' + self.get_parameter('opp_ego_odom_topic').value
@@ -139,11 +163,11 @@ class GymBridge(Node):
         self.br = TransformBroadcaster(self)
 
         # publishers
-        self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)
+        self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, qos_profile=qos_profile_sensor_data)
         self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)
         self.ego_drive_published = False
         if num_agents == 2:
-            self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, 10)
+            self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, qos_profile=qos_profile_sensor_data)
             self.ego_opp_odom_pub = self.create_publisher(Odometry, ego_opp_odom_topic, 10)
             self.opp_odom_pub = self.create_publisher(Odometry, opp_odom_topic, 10)
             self.opp_ego_odom_pub = self.create_publisher(Odometry, opp_ego_odom_topic, 10)
@@ -151,7 +175,7 @@ class GymBridge(Node):
 
         # subscribers
         self.ego_drive_sub = self.create_subscription(
-            AckermannDriveStamped,
+            AckermannDrive,
             ego_drive_topic,
             self.drive_callback,
             10)
@@ -162,7 +186,7 @@ class GymBridge(Node):
             10)
         if num_agents == 2:
             self.opp_drive_sub = self.create_subscription(
-                AckermannDriveStamped,
+                AckermannDrive,
                 opp_drive_topic,
                 self.opp_drive_callback,
                 10)
@@ -181,13 +205,15 @@ class GymBridge(Node):
 
 
     def drive_callback(self, drive_msg):
-        self.ego_requested_speed = drive_msg.drive.speed
-        self.ego_steer = drive_msg.drive.steering_angle
+        self.last_ego_command_time = self.get_clock().now()
+        self.ego_requested_speed = drive_msg.speed
+        self.ego_steer = drive_msg.steering_angle
         self.ego_drive_published = True
 
     def opp_drive_callback(self, drive_msg):
-        self.opp_requested_speed = drive_msg.drive.speed
-        self.opp_steer = drive_msg.drive.steering_angle
+        self.last_opp_command_time = self.get_clock().now()
+        self.opp_requested_speed = drive_msg.speed
+        self.opp_steer = drive_msg.steering_angle
         self.opp_drive_published = True
 
     def ego_reset_callback(self, pose_msg):
@@ -228,6 +254,15 @@ class GymBridge(Node):
             self.ego_steer = 0.0
 
     def drive_timer_callback(self):
+        # if last_ego_command_time is more than 0.25s ago, stop the car
+        if (self.get_clock().now() - self.last_ego_command_time).nanoseconds / 1e9 > 0.25:
+            self.ego_requested_speed = 0.0
+            self.ego_steer = 0.0
+            self.ego_drive_published = False
+        if self.has_opp and (self.get_clock().now() - self.last_opp_command_time).nanoseconds / 1e9 > 0.25:
+            self.opp_requested_speed = 0.0
+            self.opp_steer = 0.0
+            self.opp_drive_published = False
         if self.ego_drive_published and not self.has_opp:
             self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed]]))
         elif self.ego_drive_published and self.has_opp and self.opp_drive_published:
@@ -263,7 +298,7 @@ class GymBridge(Node):
 
         # pub tf
         self._publish_odom(ts)
-        self._publish_transforms(ts)
+        # self._publish_transforms(ts)
         self._publish_laser_transforms(ts)
         self._publish_wheel_transforms(ts)
 
@@ -367,12 +402,12 @@ class GymBridge(Node):
         ego_wheel_ts.transform.rotation.z = ego_wheel_quat[3]
         ego_wheel_ts.transform.rotation.w = ego_wheel_quat[0]
         ego_wheel_ts.header.stamp = ts
-        ego_wheel_ts.header.frame_id = self.ego_namespace + '/front_left_hinge'
-        ego_wheel_ts.child_frame_id = self.ego_namespace + '/front_left_wheel'
+        ego_wheel_ts.header.frame_id = self.ego_namespace + '/chassis_link'
+        ego_wheel_ts.child_frame_id = self.ego_namespace + '/virtual_front_wheel'
         self.br.sendTransform(ego_wheel_ts)
-        ego_wheel_ts.header.frame_id = self.ego_namespace + '/front_right_hinge'
-        ego_wheel_ts.child_frame_id = self.ego_namespace + '/front_right_wheel'
-        self.br.sendTransform(ego_wheel_ts)
+        # ego_wheel_ts.header.frame_id = self.ego_namespace + '/front_right_hinge'
+        # ego_wheel_ts.child_frame_id = self.ego_namespace + '/front_right_wheel'
+        # self.br.sendTransform(ego_wheel_ts)
 
         if self.has_opp:
             opp_wheel_ts = TransformStamped()
@@ -382,12 +417,12 @@ class GymBridge(Node):
             opp_wheel_ts.transform.rotation.z = opp_wheel_quat[3]
             opp_wheel_ts.transform.rotation.w = opp_wheel_quat[0]
             opp_wheel_ts.header.stamp = ts
-            opp_wheel_ts.header.frame_id = self.opp_namespace + '/front_left_hinge'
-            opp_wheel_ts.child_frame_id = self.opp_namespace + '/front_left_wheel'
+            opp_wheel_ts.header.frame_id = self.opp_namespace + '/chassis_link'
+            opp_wheel_ts.child_frame_id = self.opp_namespace + '/virtual_front_wheel'
             self.br.sendTransform(opp_wheel_ts)
-            opp_wheel_ts.header.frame_id = self.opp_namespace + '/front_right_hinge'
-            opp_wheel_ts.child_frame_id = self.opp_namespace + '/front_right_wheel'
-            self.br.sendTransform(opp_wheel_ts)
+            # opp_wheel_ts.header.frame_id = self.opp_namespace + '/front_right_hinge'
+            # opp_wheel_ts.child_frame_id = self.opp_namespace + '/front_right_wheel'
+            # self.br.sendTransform(opp_wheel_ts)
 
     def _publish_laser_transforms(self, ts):
         ego_scan_ts = TransformStamped()
