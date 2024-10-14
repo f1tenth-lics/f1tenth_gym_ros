@@ -163,11 +163,11 @@ class GymBridge(Node):
         self.br = TransformBroadcaster(self)
 
         # publishers
-        self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, qos_profile=qos_profile_sensor_data)
+        self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)
         self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)
         self.ego_drive_published = False
         if num_agents == 2:
-            self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, qos_profile=qos_profile_sensor_data)
+            self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, 10)
             self.ego_opp_odom_pub = self.create_publisher(Odometry, ego_opp_odom_topic, 10)
             self.opp_odom_pub = self.create_publisher(Odometry, opp_odom_topic, 10)
             self.opp_ego_odom_pub = self.create_publisher(Odometry, opp_ego_odom_topic, 10)
