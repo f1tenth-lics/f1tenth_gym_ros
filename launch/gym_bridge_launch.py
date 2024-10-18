@@ -63,17 +63,42 @@ def generate_launch_description():
         name='rviz',
         arguments=['-d', os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'launch', 'gym_bridge.rviz')]
     )
-    localization_params = os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'config', 'localization_params.yaml')
+    map_server_node = Node(
+        package='nav2_map_server',
+        executable='map_server',
+        parameters=[{'yaml_filename': map},
+                    {'topic': 'map'},
+                    {'frame_id': 'map'},
+                    {'output': 'screen'},
+                    {'use_sim_time': True}]
+    )
+    configure_map = Node(package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_localization',
+        output='screen',
+        parameters=[{'autostart': True},
+                    {'node_names': ['map_server']}]
+    )
+    
+    # localization_params = os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'config', 'localization_params.yaml')
+    # localization_launch = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource(
+    #         os.path.join(get_package_share_directory('racecar_bringup'), 'launch', 'localization_launch.py')
+    #     ),
+    #     launch_arguments={
+    #         'params_file': localization_params,
+    #         'namespace': config_dict['bridge']['ros__parameters']['ego_namespace'],
+    #         'use_namespace': 'true',
+    #         'map': map,
+    #         'autostart': 'true',
+    #     }.items()
+    # )
     localization_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('racecar_bringup'), 'launch', 'localization_launch.py')
+            os.path.join(get_package_share_directory('racecar_localization'), 'launch', 'localization_launch.py')
         ),
         launch_arguments={
-            'params_file': localization_params,
             'namespace': config_dict['bridge']['ros__parameters']['ego_namespace'],
-            'use_namespace': 'true',
-            'map': map,
-            'autostart': 'true',
         }.items()
     )
     # map_server_node = Node(
@@ -153,6 +178,8 @@ def generate_launch_description():
     ld.add_action(*declared_arguments)
     ld.add_action(rviz_node)
     ld.add_action(bridge_node)
+    ld.add_action(map_server_node)
+    ld.add_action(configure_map)
     ld.add_action(localization_launch)
     # ld.add_action(nav_lifecycle_node)
     # ld.add_action(map_server_node)
