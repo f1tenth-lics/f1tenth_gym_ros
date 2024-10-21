@@ -63,7 +63,7 @@ def generate_launch_description():
         name='rviz',
         arguments=['-d', os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'launch', 'gym_bridge.rviz')]
     )
-    localization_params = os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'config', 'localization_params.yaml')
+    localization_params = os.path.join(get_package_share_directory('racecar_bringup'), 'params', 'localization_params.yaml')
     localization_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory('racecar_bringup'), 'launch', 'localization_launch.py')
