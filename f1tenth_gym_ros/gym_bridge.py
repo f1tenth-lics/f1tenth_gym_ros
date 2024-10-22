@@ -32,7 +32,9 @@ from geometry_msgs.msg import TransformStamped
 from geometry_msgs.msg import Transform
 from geometry_msgs.msg import Quaternion
 from ackermann_msgs.msg import AckermannDrive
-from tf2_ros import TransformBroadcaster
+from tf2_ros import TransformBroadcaster, Buffer, TransformListener
+import tf_transformations
+
 from rclpy.qos import qos_profile_sensor_data, QoSProfile
 
 import gym
@@ -58,7 +60,7 @@ class GymBridge(Node):
         self.declare_parameter('scan_fov', rclpy.Parameter.Type.DOUBLE)
         self.declare_parameter('scan_beams', rclpy.Parameter.Type.INTEGER)
         self.declare_parameter('map_path', rclpy.Parameter.Type.STRING)
-        self.declare_parameter('num_agent', rclpy.Parameter.Type.INTEGER)
+        self.declare_parameter('opp', rclpy.Parameter.Type.BOOL)
         self.declare_parameter('sx', rclpy.Parameter.Type.DOUBLE)
         self.declare_parameter('sy', rclpy.Parameter.Type.DOUBLE)
         self.declare_parameter('stheta', rclpy.Parameter.Type.DOUBLE)
@@ -68,11 +70,11 @@ class GymBridge(Node):
         self.declare_parameter('kb_teleop', rclpy.Parameter.Type.BOOL)
 
         # check num_agents
-        num_agents = self.get_parameter('num_agent').value
-        if num_agents < 1 or num_agents > 2:
-            raise ValueError('num_agents should be either 1 or 2.')
-        elif not isinstance(num_agents, int):
-            raise ValueError('num_agents should be an int.')
+        opp = self.get_parameter('opp').value
+        # if num_agents < 1 or num_agents > 2:
+        #     raise ValueError('num_agents should be either 1 or 2.')
+        # elif not isinstance(num_agents, int):
+        #     raise ValueError('num_agents should be an int.')
         
         map_yaml = yaml.safe_load(open(self.get_parameter('map_path').value, 'r'))
         # Take out the .yaml
@@ -84,7 +86,7 @@ class GymBridge(Node):
         self.env = gym.make('f110_gym:f110-v0',
                             map=map,
                             map_ext=map_ext,
-                            num_agents=num_agents)
+                            num_agents=2 if opp else 1,)
         
         params_dict = {
             'mu': 1.0489,
@@ -128,7 +130,7 @@ class GymBridge(Node):
         self.last_ego_command_time = self.get_clock().now()
         self.last_opp_command_time = self.get_clock().now()
         
-        if num_agents == 2:
+        if opp:
             self.has_opp = True
             self.opp_namespace = self.get_parameter('opp_namespace').value
             sx1 = self.get_parameter('sx1').value
@@ -161,12 +163,14 @@ class GymBridge(Node):
 
         # transform broadcaster
         self.br = TransformBroadcaster(self)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # publishers
         self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)
         self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)
         self.ego_drive_published = False
-        if num_agents == 2:
+        if opp:
             self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, 10)
             self.ego_opp_odom_pub = self.create_publisher(Odometry, ego_opp_odom_topic, 10)
             self.opp_odom_pub = self.create_publisher(Odometry, opp_odom_topic, 10)
@@ -184,7 +188,7 @@ class GymBridge(Node):
             '/initialpose',
             self.ego_reset_callback,
             10)
-        if num_agents == 2:
+        if opp:
             self.opp_drive_sub = self.create_subscription(
                 AckermannDrive,
                 opp_drive_topic,
@@ -196,12 +200,12 @@ class GymBridge(Node):
                 self.opp_reset_callback,
                 10)
 
-        if self.get_parameter('kb_teleop').value:
-            self.teleop_sub = self.create_subscription(
-                Twist,
-                '/cmd_vel',
-                self.teleop_callback,
-                10)
+        # if self.get_parameter('kb_teleop').value:
+        #     self.teleop_sub = self.create_subscription(
+        #         Twist,
+        #         '/cmd_vel',
+        #         self.teleop_callback,
+        #         10)
 
 
     def drive_callback(self, drive_msg):
@@ -263,10 +267,16 @@ class GymBridge(Node):
             self.opp_requested_speed = 0.0
             self.opp_steer = 0.0
             self.opp_drive_published = False
-        if self.ego_drive_published and not self.has_opp:
-            self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed]]))
-        elif self.ego_drive_published and self.has_opp and self.opp_drive_published:
-            self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
+        if not self.has_opp:
+            if self.ego_drive_published:
+                self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed]]))
+        else:
+            if self.ego_drive_published and self.opp_drive_published:
+                self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
+            elif self.ego_drive_published:
+                self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [0.0, 0.0]]))
+            elif self.opp_drive_published:
+                self.obs, _, self.done, _ = self.env.step(np.array([[0.0, 0.0], [self.opp_steer, self.opp_requested_speed]]))
         self._update_sim_state()
 
     def timer_callback(self):
@@ -298,9 +308,9 @@ class GymBridge(Node):
 
         # pub tf
         self._publish_odom(ts)
-        # self._publish_transforms(ts)
+        self._publish_transforms(ts)
         self._publish_laser_transforms(ts)
-        self._publish_wheel_transforms(ts)
+        # self._publish_wheel_transforms(ts)
 
     def _update_sim_state(self):
         self.ego_scan = list(self.obs['scans'][0])
@@ -319,8 +329,6 @@ class GymBridge(Node):
         self.ego_speed[0] = self.obs['linear_vels_x'][0]
         self.ego_speed[1] = self.obs['linear_vels_y'][0]
         self.ego_speed[2] = self.obs['ang_vels_z'][0]
-
-        
 
     def _publish_odom(self, ts):
         ego_odom = Odometry()
@@ -359,52 +367,75 @@ class GymBridge(Node):
             self.ego_opp_odom_pub.publish(opp_odom)
 
     def _publish_transforms(self, ts):
-        ego_t = Transform()
-        ego_t.translation.x = self.ego_pose[0]
-        ego_t.translation.y = self.ego_pose[1]
-        ego_t.translation.z = 0.0
-        ego_quat = euler.euler2quat(0.0, 0.0, self.ego_pose[2], axes='sxyz')
-        ego_t.rotation.x = ego_quat[1]
-        ego_t.rotation.y = ego_quat[2]
-        ego_t.rotation.z = ego_quat[3]
-        ego_t.rotation.w = ego_quat[0]
+        # ego_t = Transform()
+        # ego_t.translation.x = self.ego_pose[0]
+        # ego_t.translation.y = self.ego_pose[1]
+        # ego_t.translation.z = 0.0
+        # ego_quat = euler.euler2quat(0.0, 0.0, self.ego_pose[2], axes='sxyz')
+        # ego_t.rotation.x = ego_quat[1]
+        # ego_t.rotation.y = ego_quat[2]
+        # ego_t.rotation.z = ego_quat[3]
+        # ego_t.rotation.w = ego_quat[0]
 
-        ego_ts = TransformStamped()
-        ego_ts.transform = ego_t
-        ego_ts.header.stamp = ts
-        ego_ts.header.frame_id = 'map'
-        ego_ts.child_frame_id = self.ego_namespace + '/base_link'
-        self.br.sendTransform(ego_ts)
+        # ego_ts = TransformStamped()
+        # ego_ts.transform = ego_t
+        # ego_ts.header.stamp = ts
+        # ego_ts.header.frame_id = 'map'
+        # ego_ts.child_frame_id = self.ego_namespace + '/base_link'
+        # self.br.sendTransform(ego_ts)
 
         if self.has_opp:
-            opp_t = Transform()
-            opp_t.translation.x = self.opp_pose[0]
-            opp_t.translation.y = self.opp_pose[1]
-            opp_t.translation.z = 0.0
-            opp_quat = euler.euler2quat(0.0, 0.0, self.opp_pose[2], axes='sxyz')
-            opp_t.rotation.x = opp_quat[1]
-            opp_t.rotation.y = opp_quat[2]
-            opp_t.rotation.z = opp_quat[3]
-            opp_t.rotation.w = opp_quat[0]
+            # Get transformation from map to self.opp_namespace/odom
+            try:
+                if not self.tf_buffer.can_transform(self.opp_namespace + '/odom', self.opp_namespace + '/base_link', rclpy.time.Time()):
+                    self.get_logger().info('Waiting for transformation from ' + self.opp_namespace + '/odom to ' + self.opp_namespace + '/base_link ...', throttle_duration_sec=1.0)
+                    return
+                opp_odom_base_link = self.tf_buffer.lookup_transform(self.opp_namespace + '/odom', self.opp_namespace + '/base_link', rclpy.time.Time())
+                opp_base_link_odom_transform = tf_transformations.inverse_matrix(
+                    tf_transformations.concatenate_matrices(
+                        tf_transformations.translation_matrix([opp_odom_base_link.transform.translation.x, opp_odom_base_link.transform.translation.y, opp_odom_base_link.transform.translation.z]),
+                        tf_transformations.quaternion_matrix([opp_odom_base_link.transform.rotation.x, opp_odom_base_link.transform.rotation.y, opp_odom_base_link.transform.rotation.z, opp_odom_base_link.transform.rotation.w])
+                    )
+                )
+                opp_quat = euler.euler2quat(0., 0., self.opp_pose[2], axes='sxyz')
+                opp_map_base_link_transform = tf_transformations.concatenate_matrices(
+                    tf_transformations.translation_matrix([self.opp_pose[0], self.opp_pose[1], 0.0]),
+                    tf_transformations.quaternion_matrix([opp_quat[1], opp_quat[2], opp_quat[3], opp_quat[0]])
+                )
+                opp_map_odom_transform = tf_transformations.concatenate_matrices(
+                    opp_map_base_link_transform,
+                    opp_base_link_odom_transform
+                )
 
-            opp_ts = TransformStamped()
-            opp_ts.transform = opp_t
-            opp_ts.header.stamp = ts
-            opp_ts.header.frame_id = 'map'
-            opp_ts.child_frame_id = self.opp_namespace + '/base_link'
-            self.br.sendTransform(opp_ts)
+                opp_map_odom_translation = tf_transformations.translation_from_matrix(opp_map_odom_transform)
+                opp_map_odom_quaternion = tf_transformations.quaternion_from_matrix(opp_map_odom_transform)
+                opp_map_odom = TransformStamped()
+                opp_map_odom.transform.translation.x = opp_map_odom_translation[0]
+                opp_map_odom.transform.translation.y = opp_map_odom_translation[1]
+                opp_map_odom.transform.translation.z = opp_map_odom_translation[2]
+                opp_map_odom.transform.rotation.x = opp_map_odom_quaternion[0]
+                opp_map_odom.transform.rotation.y = opp_map_odom_quaternion[1]
+                opp_map_odom.transform.rotation.z = opp_map_odom_quaternion[2]
+                opp_map_odom.transform.rotation.w = opp_map_odom_quaternion[3]
+                opp_map_odom.header.stamp = opp_odom_base_link.header.stamp
+                opp_map_odom.header.frame_id = 'map'
+                opp_map_odom.child_frame_id = self.opp_namespace + '/odom'
+                self.br.sendTransform(opp_map_odom)
+            except Exception as e:
+                self.get_logger().error('Failed to get transformation from map to ' + self.opp_namespace + '/odom: ' + str(e))
+            
 
     def _publish_wheel_transforms(self, ts):
-        ego_wheel_ts = TransformStamped()
-        ego_wheel_quat = euler.euler2quat(0., 0., self.ego_steer, axes='sxyz')
-        ego_wheel_ts.transform.rotation.x = ego_wheel_quat[1]
-        ego_wheel_ts.transform.rotation.y = ego_wheel_quat[2]
-        ego_wheel_ts.transform.rotation.z = ego_wheel_quat[3]
-        ego_wheel_ts.transform.rotation.w = ego_wheel_quat[0]
-        ego_wheel_ts.header.stamp = ts
-        ego_wheel_ts.header.frame_id = self.ego_namespace + '/chassis_link'
-        ego_wheel_ts.child_frame_id = self.ego_namespace + '/virtual_front_wheel'
-        self.br.sendTransform(ego_wheel_ts)
+        # ego_wheel_ts = TransformStamped()
+        # ego_wheel_quat = euler.euler2quat(0., 0., self.ego_steer, axes='sxyz')
+        # ego_wheel_ts.transform.rotation.x = ego_wheel_quat[1]
+        # ego_wheel_ts.transform.rotation.y = ego_wheel_quat[2]
+        # ego_wheel_ts.transform.rotation.z = ego_wheel_quat[3]
+        # ego_wheel_ts.transform.rotation.w = ego_wheel_quat[0]
+        # ego_wheel_ts.header.stamp = ts
+        # ego_wheel_ts.header.frame_id = self.ego_namespace + '/chassis_link'
+        # ego_wheel_ts.child_frame_id = self.ego_namespace + '/virtual_front_wheel'
+        # self.br.sendTransform(ego_wheel_ts)
         # ego_wheel_ts.header.frame_id = self.ego_namespace + '/front_right_hinge'
         # ego_wheel_ts.child_frame_id = self.ego_namespace + '/front_right_wheel'
         # self.br.sendTransform(ego_wheel_ts)
@@ -418,11 +449,11 @@ class GymBridge(Node):
             opp_wheel_ts.transform.rotation.w = opp_wheel_quat[0]
             opp_wheel_ts.header.stamp = ts
             opp_wheel_ts.header.frame_id = self.opp_namespace + '/chassis_link'
-            opp_wheel_ts.child_frame_id = self.opp_namespace + '/virtual_front_wheel'
+            opp_wheel_ts.child_frame_id = self.opp_namespace + '/front_left_wheel'
             self.br.sendTransform(opp_wheel_ts)
-            # opp_wheel_ts.header.frame_id = self.opp_namespace + '/front_right_hinge'
-            # opp_wheel_ts.child_frame_id = self.opp_namespace + '/front_right_wheel'
-            # self.br.sendTransform(opp_wheel_ts)
+            opp_wheel_ts.header.frame_id = self.opp_namespace + '/front_right_hinge'
+            opp_wheel_ts.child_frame_id = self.opp_namespace + '/front_right_wheel'
+            self.br.sendTransform(opp_wheel_ts)
 
     def _publish_laser_transforms(self, ts):
         ego_scan_ts = TransformStamped()
