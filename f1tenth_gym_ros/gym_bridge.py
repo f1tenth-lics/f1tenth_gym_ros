@@ -23,7 +23,7 @@
 import rclpy
 from rclpy.node import Node
 
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, Imu
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import PoseWithCovarianceStamped
@@ -50,11 +50,13 @@ class GymBridge(Node):
         self.declare_parameter('ego_odom_topic', rclpy.Parameter.Type.STRING)
         self.declare_parameter('ego_opp_odom_topic', rclpy.Parameter.Type.STRING)
         self.declare_parameter('ego_scan_topic', rclpy.Parameter.Type.STRING)
+        self.declare_parameter('ego_imu_topic', rclpy.Parameter.Type.STRING)
         self.declare_parameter('ego_drive_topic', rclpy.Parameter.Type.STRING)
         self.declare_parameter('opp_namespace', rclpy.Parameter.Type.STRING)
         self.declare_parameter('opp_odom_topic', rclpy.Parameter.Type.STRING)
         self.declare_parameter('opp_ego_odom_topic', rclpy.Parameter.Type.STRING)
         self.declare_parameter('opp_scan_topic', rclpy.Parameter.Type.STRING)
+        self.declare_parameter('opp_imu_topic', rclpy.Parameter.Type.STRING)
         self.declare_parameter('opp_drive_topic', rclpy.Parameter.Type.STRING)
         self.declare_parameter('scan_distance_to_base_link', rclpy.Parameter.Type.DOUBLE)
         self.declare_parameter('scan_fov', rclpy.Parameter.Type.DOUBLE)
@@ -82,12 +84,6 @@ class GymBridge(Node):
         # Get the map_ext from the yaml file with key "image"
         map_ext = '.' + map_yaml['image'].split('.')[-1]
 
-        # env backend
-        self.env = gym.make('f110_gym:f110-v0',
-                            map=map,
-                            map_ext=map_ext,
-                            num_agents=2 if opp else 1,)
-        
         params_dict = {
             'mu': 1.0489,
             'C_Sf': 4.718,
@@ -109,6 +105,14 @@ class GymBridge(Node):
             'length': 0.58
         }
 
+        # env backend
+        self.env = gym.make('f110_gym:f110-v0',
+                            map=map,
+                            map_ext=map_ext,
+                            num_agents=2 if opp else 1,
+                            params_dict=params_dict)
+        
+
         sx = self.get_parameter('sx').value
         sy = self.get_parameter('sy').value
         stheta = self.get_parameter('stheta').value
@@ -119,6 +123,7 @@ class GymBridge(Node):
         self.ego_collision = False
         self.ego_namespace = self.get_parameter('ego_namespace').value
         ego_scan_topic = self.ego_namespace + '/' + self.get_parameter('ego_scan_topic').value
+        ego_imu_topic = self.ego_namespace + '/' + self.get_parameter('ego_imu_topic').value
         ego_drive_topic = self.ego_namespace + '/' + self.get_parameter('ego_drive_topic').value
         scan_fov = self.get_parameter('scan_fov').value
         scan_beams = self.get_parameter('scan_beams').value
@@ -146,6 +151,7 @@ class GymBridge(Node):
             self.opp_scan = list(self.obs['scans'][1])
 
             opp_scan_topic = self.opp_namespace + '/' + self.get_parameter('opp_scan_topic').value
+            opp_imu_topic = self.opp_namespace + '/' + self.get_parameter('opp_imu_topic').value
             opp_odom_topic = self.opp_namespace + '/' + self.get_parameter('opp_odom_topic').value
             opp_drive_topic = self.opp_namespace + '/' + self.get_parameter('opp_drive_topic').value
 
@@ -168,10 +174,12 @@ class GymBridge(Node):
 
         # publishers
         self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)
+        self.ego_imu_pub = self.create_publisher(Imu, ego_imu_topic, 10)
         self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)
         self.ego_drive_published = False
         if opp:
             self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, 10)
+            self.opp_imu_pub = self.create_publisher(Imu, opp_imu_topic, 10)
             self.ego_opp_odom_pub = self.create_publisher(Odometry, ego_opp_odom_topic, 10)
             self.opp_odom_pub = self.create_publisher(Odometry, opp_odom_topic, 10)
             self.opp_ego_odom_pub = self.create_publisher(Odometry, opp_ego_odom_topic, 10)
@@ -308,6 +316,7 @@ class GymBridge(Node):
 
         # pub tf
         self._publish_odom(ts)
+        self._publish_imu(ts)
         self._publish_transforms(ts)
         self._publish_laser_transforms(ts)
         # self._publish_wheel_transforms(ts)
@@ -329,6 +338,37 @@ class GymBridge(Node):
         self.ego_speed[0] = self.obs['linear_vels_x'][0]
         self.ego_speed[1] = self.obs['linear_vels_y'][0]
         self.ego_speed[2] = self.obs['ang_vels_z'][0]
+
+    def _publish_imu(self, ts):
+        imu_cov = [0.01, 0.0, 0.0,
+                   0.0, 0.01, 0.0,
+                   0.0, 0.0, 0.01]
+        ego_imu = Imu()
+        ego_imu.header.stamp = ts
+        ego_imu.header.frame_id = self.ego_namespace + '/imu_link'
+        # Noise is added to the imu data
+        ego_quat = euler.euler2quat(0., 0., self.ego_pose[2] + np.random.normal(0, 0.01), axes='sxyz')
+        ego_imu.orientation.x = ego_quat[1]
+        ego_imu.orientation.y = ego_quat[2]
+        ego_imu.orientation.z = ego_quat[3]
+        ego_imu.orientation.w = ego_quat[0]
+        ego_imu.orientation_covariance = imu_cov
+        ego_imu.angular_velocity.z = self.ego_speed[2] + np.random.normal(0, 0.01)
+        ego_imu.angular_velocity_covariance = imu_cov
+        self.ego_imu_pub.publish(ego_imu)
+
+        if self.has_opp:
+            opp_imu = Imu()
+            opp_imu.header.stamp = ts
+            opp_imu.header.frame_id = self.opp_namespace + '/imu_link'
+            opp_quat = euler.euler2quat(0., 0., self.opp_pose[2] + np.random.normal(0, 0.01), axes='sxyz')
+            opp_imu.orientation.x = opp_quat[1]
+            opp_imu.orientation.y = opp_quat[2]
+            opp_imu.orientation.z = opp_quat[3]
+            opp_imu.orientation.w = opp_quat[0]
+            opp_imu.angular_velocity.z = self.opp_speed[2] + np.random.normal(0, 0.01)
+            self.opp_imu_pub.publish(opp_imu)
+        
 
     def _publish_odom(self, ts):
         ego_odom = Odometry()
