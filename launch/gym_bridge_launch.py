@@ -78,13 +78,13 @@ def generate_launch_description():
         name='rviz',
         arguments=['-d', os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'launch', 'gym_bridge.rviz')]
     )
-    localization_params = os.path.join(get_package_share_directory('racecar_bringup'), 'params', 'localization_params.yaml')
+    # localization_params = os.path.join(get_package_share_directory('racecar_bringup'), 'params', 'localization_params.yaml')
     ego_localization = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory('racecar_bringup'), 'launch', 'localization_launch.py')
         ),
         launch_arguments={
-            'params_file': localization_params,
+            # 'params_file': localization_params,
             'namespace': config_dict['bridge']['ros__parameters']['ego_namespace'],
             'use_namespace': 'true',
             'map': map,
@@ -152,7 +152,7 @@ def generate_launch_description():
             os.path.join(get_package_share_directory('racecar_bringup'), 'launch', 'localization_launch.py')
         ),
         launch_arguments={
-            'params_file': localization_params,
+            # 'params_file': localization_params,
             'namespace': config_dict['bridge']['ros__parameters']['opp_namespace'],
             'spawn_map': 'false',
             'use_namespace': 'true',
