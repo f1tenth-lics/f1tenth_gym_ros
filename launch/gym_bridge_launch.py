@@ -49,9 +49,33 @@ def generate_launch_description():
             description='Whether to spawn an opponent'
         )
     )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'params_file',
+            default_value=os.path.join(get_package_share_directory('racecar_bringup'), 'params', 'localization_params.yaml'),
+            description='Full path to the localization params file to load'
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'perception',
+            default_value='false',
+            description='Whether to run perception'
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'centerline_csv',
+            default_value=os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'maps', 'levine_centerline.csv'),
+            description='Full path to the centerline csv file to load'
+        )
+    )
 
     map = LaunchConfiguration('map')
     opp = LaunchConfiguration('opp')
+    params_file = LaunchConfiguration('params_file')
+    perception = LaunchConfiguration('perception')
+    centerline_csv = LaunchConfiguration('centerline_csv')
 
     ld = LaunchDescription()
     config = os.path.join(
@@ -78,15 +102,16 @@ def generate_launch_description():
         name='rviz',
         arguments=['-d', os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'launch', 'gym_bridge.rviz')]
     )
-    # localization_params = os.path.join(get_package_share_directory('racecar_bringup'), 'params', 'localization_params.yaml')
-    ego_localization = IncludeLaunchDescription(
+    ego_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('racecar_bringup'), 'launch', 'localization_launch.py')
+            os.path.join(get_package_share_directory('racecar_bringup'), 'launch', 'simulation_launch.py')
         ),
         launch_arguments={
-            # 'params_file': localization_params,
+            'params_file': params_file,
             'namespace': config_dict['bridge']['ros__parameters']['ego_namespace'],
             'use_namespace': 'true',
+            'perception': perception,
+            'centerline_csv': centerline_csv,
             'map': map,
             'range_method': 'rm',
             'autostart': 'true',
@@ -189,7 +214,7 @@ def generate_launch_description():
     nodes = [
         bridge_node,
         rviz_node,
-        ego_localization,
+        ego_bringup,
         ego_robot_publisher,
         ego_controller,
         opp_robot_publisher,
